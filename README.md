@@ -18,8 +18,8 @@ the [releases](https://github.com/markspan/AlakazamDeconvolve/releases), or one 
 `build`, installs the same way through **From a link**, and so does the link
 to this repository. The tool appears on the Tools tab, as it did before.
 
-It needs an Alakazam that no longer carries `Deconvolve` itself (newer than
-V0.4.5.2). Workspaces and templates made with the built-in tool open and
+It needs Alakazam V0.4.5.3 or newer, the first without `Deconvolve` built
+in. Workspaces and templates made with the built-in tool open and
 recalculate as before once the plugin is installed; Alakazam offers to
 install it when one needs it.
 
