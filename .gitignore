@@ -1,0 +1,5 @@
+*.asv
+manual/index.html
+manual/index_files/
+manual/.quarto/
+site/
