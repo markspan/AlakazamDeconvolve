@@ -134,6 +134,14 @@ function [EEG, options] = Deconvolve(input, varargin)
 %                          evaluateAt is evaluated: 'quantile' (the default,
 %                          the toolbox's: ten quantiles), 'linear' or
 %                          'average'
+%     trialsMethod         for output 'trials': 'toolbox' (the default: the
+%                          toolbox's uf_erpimage, channel by channel) or
+%                          'fast' (Alakazam's arithmetic, the same trials at
+%                          a fraction of the time; see Unfold.fitBins)
+%     parallel             'auto' (the default), 'off' or 'on': whether the
+%                          fit and the toolbox's trials run on parallel
+%                          workers (see Unfold.fitBins); not set by the
+%                          dialog, since it changes no result
 %     excludeAroundCuts    false (the toolbox's way, and the dialog's first
 %                          choice): the data either side of a cut is fitted
 %                          as it is; true: a response window's worth is left
@@ -203,7 +211,9 @@ tagged = applyBins(input, options);
     'TimeBasisCount', TransTools.FieldOr(options, 'timeBasisCount', 30), ...
     'FoldEvent', TransTools.FieldOr(options, 'foldEvent', {}), ...
     'SolverIterations', TransTools.FieldOr(options, 'solverIterations', 400), ...
-    'Output', char(string(TransTools.FieldOr(options, 'output', 'average'))));
+    'Output', char(string(TransTools.FieldOr(options, 'output', 'average'))), ...
+    'TrialsMethod', char(string(TransTools.FieldOr(options, 'trialsMethod', 'toolbox'))), ...
+    'Parallel', char(string(TransTools.FieldOr(options, 'parallel', 'auto'))));
 
 report(info);
 end

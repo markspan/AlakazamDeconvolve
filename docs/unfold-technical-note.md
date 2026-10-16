@@ -416,6 +416,37 @@ another event of the model has no trial; they are counted and noted. The test
 `OverlapCorrectedTrialsTest/theTrialsAreTheToolboxsOwn` runs the same model as
 a script and calls `uf_erpimage` by hand; the trials agree to 10<sup>-6</sup>.
 
+Each `uf_erpimage` call epochs the whole recording around every modelled event,
+nuisance events included, three times (`uf_epoch`, each time through EEGLAB's
+`pop_epoch` and `eeg_checkset`), after checking each event against every
+stretch left out in an interpreted loop. On a long recording with many events,
+and many stretches left out, that is a long wait per channel. Two things help:
+
+- **Parallel workers.** On a large job (`Parallel` 'auto', the default) the
+  channels go to parallel workers, each making the same call on the same
+  one-channel copy (`Unfold.workerPool`), when the Parallel Computing Toolbox
+  is installed and Alakazam's settings allow it, and when Deconvolve is not
+  itself running on a worker (Apply to All Raw Files).
+- **Trials made by: Alakazam** (`TrialsMethod` 'fast', a departure from the
+  toolbox, chosen by the user). The same arithmetic `uf_erpimage` does, the
+  event's row of `X` times β plus the recording less X<sub>dc</sub>β, but
+  evaluated only at the samples of the binned events' windows and for every
+  channel at once: X<sub>dc</sub> restricted to those rows times β is the
+  model's prediction there. Which events and samples: the latency rounded as
+  `uf_epoch` rounds it; an event dropped by `uf_epoch`'s own test against each
+  stretch left out (its window the fit's lags and one sample more); the
+  samples EEGLAB's `epoch` cuts, from round(start × rate) to
+  round(end × rate − 1) around the latency; an event whose window runs off the
+  recording dropped. `FastTrialsTest` holds it to `uf_erpimage`'s trials, with
+  a cut, stretches left out, an event sharing its sample, and a covariate and a
+  spline in the formulas, to 10<sup>-9</sup> of the trials' largest value.
+
+The fit itself (2.6) is spread over workers the same way when the solver is the
+default lsmr and the job is large: each worker runs the toolbox's `uf_glmfit` on
+its channels and returns its betas and its warnings. lsmr solves one channel at
+a time on a design every channel shares, so the betas are the same to rounding
+error (a worker computes on one thread).
+
 ### 2.8 Plotting: not used, and the baseline
 
 The results go to Alakazam's own views (ERP plots, scalp maps, and EpochView's

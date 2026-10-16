@@ -57,6 +57,7 @@ explained by two events is shared between them [@smith2015; @ehinger2019;
 | **Collinearity (VIF)** | not checked | The variance inflation factor of every column of the time-expanded design, by Unfold's `uf_vif`: how hard the overlap makes it to tell the bins apart (with overlap correction only; long windows need much memory). Each term's largest is in the notes; the toolbox notes that splines give high values that are usually no problem. |
 | **Model fit** | not measured | How much of the recording the model explains, per channel, by Unfold's `uf_checkmodelfit` (with overlap correction only): R², the partial R² of each term (the model refitted without it), or either cross-validated (each fold fitted on the rest). The summary is in the notes and the data-quality report. |
 | **Folds cut at** | none | For a cross-validated fit: the event code the recording is cut into folds at, such as the breaks between blocks. The toolbox refuses a code that falls where an event's response is modelled. |
+| **Trials made by** | the toolbox's `uf_erpimage` | For overlap-corrected trials: the toolbox's `uf_erpimage`, channel by channel, or Alakazam's own arithmetic, the same trials far sooner on a long recording (below). |
 
 : Deconvolve's options. {#tbl-deconvolve}
 
@@ -161,6 +162,39 @@ model the saccades and blinks instead.
 With overlap correction, Deconvolve needs continuous data without a DC
 offset, since the regression has no intercept for the recording as a whole:
 high-pass filter first.
+
+### Long recordings
+
+On a long recording with many events, two steps take most of the time. The
+busy indicator shows how far the trials have got, and the fit when it runs
+on parallel workers (one after another, the toolbox fits every channel in a
+single call, which reports no progress).
+
+- **The fit** solves one channel after another. With the default solver
+  (lsmr) and a large job, the channels are fitted on parallel workers, each
+  running the toolbox's own `uf_glmfit` on its channel. The result is the
+  same to rounding error (a worker computes on one thread and sums some
+  terms in another order), and a channel that ran out of iterations still
+  says so.
+- **The overlap-corrected trials**: `uf_erpimage` epochs the whole recording
+  around every modelled event, three times for each channel, which on a long
+  recording with many events adds up to a long wait. On a large job the
+  channels go to parallel workers. **Trials made by: Alakazam** computes the
+  same trials much faster instead, only at the trials' own
+  samples and for every channel at once: the recording less the model's
+  prediction there, plus the event's own fitted response, with the events
+  kept and the windows cut as `uf_epoch` and EEGLAB's `pop_epoch` keep and cut
+  them. It agrees with the toolbox's trials to rounding error, with cuts,
+  stretches left out, covariates and splines, but it is Alakazam's arithmetic
+  rather than the toolbox's call, which is why it is not the default.
+
+Parallel workers are used only when the job is large enough to repay
+starting them (which takes a while the first time), when the Parallel
+Computing Toolbox is installed, and when **Process recordings in parallel**
+is checked in Alakazam's **Settings** (Processing). How many: as many as the
+cores and the free memory allow. A pool already running is used as it is.
+Under **Apply to All Raw Files**, where each recording already has a worker
+of its own, Deconvolve does its channels one after another on that worker.
 
 ## Without overlap correction, and the solvers
 

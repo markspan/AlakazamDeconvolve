@@ -161,8 +161,8 @@ function options = DeconvolveDialog(EEG, stored)
         'Padding', [0 0 0 0], 'ColumnSpacing', 24);
     settings = uigridlayout(settingsRow, [12 4], 'ColumnWidth', {190, 90, 210, 90}, ...
         'RowHeight', repmat({'fit'}, 1, 12), 'Padding', [0 0 0 0], 'RowSpacing', 4);
-    fitting = uigridlayout(settingsRow, [7 4], 'ColumnWidth', {150, 80, 190, 80}, ...
-        'RowHeight', repmat({'fit'}, 1, 7), 'Padding', [0 0 0 0], 'RowSpacing', 4);
+    fitting = uigridlayout(settingsRow, [8 4], 'ColumnWidth', {150, 80, 190, 80}, ...
+        'RowHeight', repmat({'fit'}, 1, 8), 'Padding', [0 0 0 0], 'RowSpacing', 4);
     uilabel(settings, 'Text', 'Window start (ms):');
     % The window decides which events overlap, so the model is shown again.
     startField = uieditfield(settings, 'numeric', 'Value', seed.windowMs(1), ...
@@ -459,6 +459,25 @@ function options = DeconvolveDialog(EEG, stored)
          'apart. Splines give high values that are usually no problem.']);
     vifDropdown.Layout.Row = 7;
     vifDropdown.Layout.Column = [2 4];
+
+    % How the overlap-corrected trials are made: the toolbox's uf_erpimage,
+    % channel by channel, or Alakazam's arithmetic, which gives the same
+    % trials far sooner on a long recording (Unfold.fitBins, TrialsMethod).
+    trialsLabel = uilabel(fitting, 'Text', 'Trials made by:');
+    trialsLabel.Layout.Row = 8;
+    trialsLabel.Layout.Column = 1;
+    trialsDropdown = uidropdown(fitting, 'Tag', 'trialsMethod', ...
+        'Items', {'The toolbox''s uf_erpimage, channel by channel', ...
+                  'Alakazam: less compatible, but much faster'}, ...
+        'ItemsData', {'toolbox', 'fast'}, ...
+        'Value', choiceSeed(seed.trialsMethod, {'toolbox', 'fast'}), ...
+        'Tooltip', ['For overlap-corrected trials. uf_erpimage epochs the whole recording ' ...
+         'around every modelled event, three times for each channel, which takes long on a ' ...
+         'long recording with many events. Alakazam computes the same trials only at their ' ...
+         'own samples and for every channel at once; it agrees with the toolbox to rounding ' ...
+         'error, but it is Alakazam''s arithmetic, not the toolbox''s call.']);
+    trialsDropdown.Layout.Row = 8;
+    trialsDropdown.Layout.Column = [2 4];
     onFitChanged(false);
 
     % The formulas, the model they make, and what a formula can use share
@@ -550,6 +569,12 @@ function options = DeconvolveDialog(EEG, stored)
         marginalDropdown.Enable = forTerms;
         if exist('spacingDropdown', 'var')
             spacingDropdown.Enable = forTerms;
+        end
+        % How the trials are made matters only for overlap-corrected trials:
+        % without overlap correction they are the epochs as cut.
+        if exist('trialsDropdown', 'var') && exist('overlapDropdown', 'var')
+            trialsDropdown.Enable = matlab.lang.OnOffSwitchState( ...
+                strcmp(outputDropdown.Value, 'trials') && strcmp(overlapDropdown.Value, 'on'));
         end
     end
 
@@ -712,6 +737,7 @@ function options = DeconvolveDialog(EEG, stored)
         lsmr = strcmp(solverDropdown.Value, 'toolbox') && strcmp(overlapDropdown.Value, 'on');
         iterationsField.Enable = matlab.lang.OnOffSwitchState(lsmr);
         alphaField.Enable = matlab.lang.OnOffSwitchState(strcmp(solverDropdown.Value, 'glmnet'));
+        onOutputChanged();
         if refresh
             showModel();
         end
@@ -889,7 +915,8 @@ function options = DeconvolveDialog(EEG, stored)
             'glmnetAlpha', alphaField.Value, ...
             'marginal', marginalDropdown.Value, ...
             'solverIterations', iterationsField.Value, ...
-            'output', outputDropdown.Value);
+            'output', outputDropdown.Value, ...
+            'trialsMethod', trialsDropdown.Value);
         if candidate.windowMs(1) >= candidate.windowMs(2)
             uialert(fig, 'Would the window start come before its stop?', 'Check the window');
             return;
@@ -1202,7 +1229,7 @@ function seed = defaults()
         'excludeAroundCuts', false, 'codingSchema', 'reference', ...
         'evaluateSpacing', 'quantile', 'modelFit', 'none', 'foldEvent', {{}}, ...
         'timeBasis', 'stick', 'timeBasisCount', 30, 'collinearity', 'none', ...
-        'output', 'average');
+        'output', 'average', 'trialsMethod', 'toolbox');
 end
 
 function value = onOff(flag)

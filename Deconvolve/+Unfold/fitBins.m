@@ -262,6 +262,32 @@ function [EEG, info] = fitBins(input, varargin)
 %                        correction the trials are the epochs as uf_epoch
 %                        cut them, nothing subtracted. 'terms': one waveform
 %                        per model term instead (see below).
+%     TrialsMethod       how the overlap-corrected trials are made:
+%                        'toolbox' (the default): by uf_erpimage, channel by
+%                        channel, as above. Each call epochs the whole
+%                        recording around every modelled event, three times,
+%                        so on a long recording with many events this takes
+%                        long. 'fast': by Alakazam (fastTrials), the same
+%                        trials from the same model, computed only at the
+%                        trials' own samples and for every channel at once:
+%                        the recording less the model's prediction there,
+%                        plus the event's own fitted response, kept and cut
+%                        as uf_epoch and pop_epoch keep and cut them. It
+%                        agrees with the toolbox's to rounding error
+%                        (OverlapCorrectedTrialsTest), but it is Alakazam's
+%                        arithmetic rather than the toolbox's call, so a
+%                        change to uf_erpimage would not reach it.
+%     Parallel           'auto' (the default), 'off' or 'on': whether the
+%                        steps done one channel at a time run on parallel
+%                        workers (Unfold.workerPool): the fit with the
+%                        default solver, each worker running the toolbox's
+%                        uf_glmfit on its channels, and the toolbox's trials.
+%                        'auto' uses workers only for a large job and only
+%                        where Alakazam's settings allow parallel processing.
+%                        The results are the same either way, to rounding
+%                        error (a worker computes on one thread); not stored
+%                        with the options, since it is no part of the
+%                        analysis.
 %
 %   A BIN'S WAVEFORM is the model's prediction with every continuous and
 %   spline term at its average over ALL the modelled events that carry it
@@ -363,8 +389,14 @@ function [EEG, info] = fitBins(input, varargin)
     parsed.addParameter('TimeBasisCount', 30, @(v) isnumeric(v) && isscalar(v) && v >= 1 && v == round(v));
     parsed.addParameter('Output', 'average', ...
         @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'average', 'trials', 'terms'})));
+    parsed.addParameter('TrialsMethod', 'toolbox', ...
+        @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'toolbox', 'fast'})));
+    parsed.addParameter('Parallel', 'auto', ...
+        @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'auto', 'off', 'on'})));
     parsed.parse(varargin{:});
     opts = parsed.Results;
+    opts.TrialsMethod = lower(char(string(opts.TrialsMethod)));
+    opts.Parallel = lower(char(string(opts.Parallel)));
     opts.BaselineMs = resolveBaseline(opts.BaselineMs, opts.WindowMs);
     opts.Marginal = upper(char(string(opts.Marginal)));
     opts.MissingValues = lower(char(string(opts.MissingValues)));
@@ -475,6 +507,7 @@ function [EEG, info] = fitBins(input, varargin)
         plan.notes{end + 1} = note;
     end
     info = modelInfo(input, plan, opts, excluded, srate);
+    info.fitWorkers = TransTools.FieldOr(plan, 'fitWorkers', 1);
     if exist('fit', 'var')
         info.modelFit = fit;
     end
@@ -539,11 +572,27 @@ function [work, plan, excluded] = deconvolve(work, plan, input, opts, channels, 
     if strcmp(method, 'default')
         method = 'lsmr';
     end
-    lastwarn('');
-    work = uf_glmfit(work, 'method', method, 'lsmriterations', opts.SolverIterations, ...
-        'glmnetalpha', opts.GlmnetAlpha);
-    [solverWarning, ~] = lastwarn();
-    if strcmp(method, 'lsmr') && contains(lower(solverWarning), 'did not converge')
+    % lsmr solves one channel at a time on a design every channel shares, so
+    % a long fit can be spread over parallel workers (fitOnWorkers); the
+    % exact solver and glmnet solve all channels together and are not.
+    pool = [];
+    plan.fitWorkers = 1;
+    if strcmp(method, 'lsmr')
+        nch = size(work.data, 1);
+        bytes = bytesOf(rmfield(work, 'data')) + 6 * 8 * size(work.data, 2) + 1.5e9;
+        [pool, plan.fitWorkers] = Unfold.workerPool(nch, nnz(work.unfold.Xdc) * nch, 5e7, ...
+            opts.Parallel, bytes);
+    end
+    if isempty(pool)
+        lastwarn('');
+        work = uf_glmfit(work, 'method', method, 'lsmriterations', opts.SolverIterations, ...
+            'glmnetalpha', opts.GlmnetAlpha);
+        [solverWarning, ~] = lastwarn();
+        solverWarnings = {solverWarning};
+    else
+        [work, solverWarnings] = fitOnWorkers(work, pool, plan.fitWorkers, method, opts);
+    end
+    if strcmp(method, 'lsmr') && any(contains(lower(solverWarnings), 'did not converge'))
         plan.notes{end + 1} = sprintf(['The solver ran out of iterations (Solver iterations, %d) ' ...
             'before it converged, for at least one channel, so these waveforms are an unfinished ' ...
             'estimate. That usually means the design is close to collinear (bins whose events ' ...
@@ -555,6 +604,87 @@ function [work, plan, excluded] = deconvolve(work, plan, input, opts, channels, 
                 locked, 'UniformOutput', false), ', '));
         end
     end
+end
+
+function [work, warned] = fitOnWorkers(work, pool, workers, method, opts)
+%FITONWORKERS  The fit, channel by channel on parallel workers: each worker
+%   runs the toolbox's own uf_glmfit, with the same solver and limits, on
+%   the dataset holding one channel. The solver takes one channel at a time
+%   anyway, on the design every channel shares (the rows it drops and the
+%   scaling it applies depend on the design alone), so the betas are the
+%   ones a single call for every channel gives, to rounding error: a worker
+%   computes on one thread, and sums some terms in another order (about
+%   1e-12 of the values, FastTrialsTest). What each worker warned is
+%   returned in WARNED, so a channel that ran out of iterations still says
+%   so. Progress is the channels done.
+    nch = size(work.data, 1);
+    shared = parallel.pool.Constant(rmfield(work, 'data'));
+    futures = parallel.FevalFuture.empty;
+    for ch = 1:nch
+        futures(ch) = parfeval(pool, @fitChannel, 3, shared, work.data(ch, :), method, ...
+            opts.SolverIterations, opts.GlmnetAlpha);
+    end
+    stopTheRest = onCleanup(@() cancel(futures));
+    betas = cell(nch, 1);
+    customs = cell(nch, 1);
+    warned = cell(1, nch);
+    TransTools.BusyGate('progress', 0);
+    for k = 1:nch
+        [ch, beta, custom, said] = fetchNextOrCause(futures);
+        betas{ch} = beta;
+        customs{ch} = custom;
+        warned{ch} = said;
+        TransTools.BusyGate('message', sprintf('Fitting the model on %d workers: %d of %d channels...', ...
+            workers, k, nch));
+        TransTools.BusyGate('progress', k / nch);
+    end
+    TransTools.BusyGate('progress', 1);
+    if all(~cellfun(@isempty, betas))
+        work.unfold.beta_dc = cat(1, betas{:});
+    else
+        work.unfold.beta_dc = [];
+    end
+    if any(~cellfun(@isempty, customs))
+        work.unfold.beta_dcCustomrow = cat(1, customs{:});
+    end
+    work.unfold.channel = 1:nch;
+end
+
+function [beta, custom, warned] = fitChannel(shared, row, method, iterations, alpha) %#ok<INUSD> read in evalc
+%FITCHANNEL  On a worker: uf_glmfit of one channel, ROW, on the fitted
+%   dataset SHARED holds without its data; its betas, any custom-row betas,
+%   and the last warning it gave.
+    one = shared.Value;
+    one.data = row;
+    one.nbchan = 1;
+    lastwarn('');
+    evalc(['one = uf_glmfit(one, ''method'', method, ''lsmriterations'', iterations, ' ...
+        '''glmnetalpha'', alpha);']);
+    beta = one.unfold.beta_dc;
+    custom = [];
+    if isfield(one.unfold, 'beta_dcCustomrow')
+        custom = one.unfold.beta_dcCustomrow;
+    end
+    [warned, ~] = lastwarn();
+end
+
+function varargout = fetchNextOrCause(futures)
+%FETCHNEXTORCAUSE  fetchNext, raising a worker's own error rather than the
+%   pool's wrapper around it, so the message is the one the toolbox gave.
+    try
+        [varargout{1:nargout}] = fetchNext(futures);
+    catch err
+        if ~isempty(err.cause)
+            rethrow(err.cause{1});
+        end
+        rethrow(err);
+    end
+end
+
+function bytes = bytesOf(value) %#ok<INUSD> read by whos
+%BYTESOF  The memory VALUE takes, sparse matrices counted as stored.
+    info = whos('value');
+    bytes = info.bytes;
 end
 
 function [fitted, plan, excluded, epoched] = regressOnEpochs(work, plan, input, opts, channels)
@@ -780,7 +910,14 @@ function [EEG, info] = packageTrials(input, plan, work, info, opts, excluded, sr
     % The stretches the model left out, and each cut as a stretch of one
     % sample, so a trial spanning a cut is left out, as pop_epoch leaves out
     % an epoch holding a boundary (the model's event list has none).
-    [trials, rows] = erpImageTrials(work, plan, [excluded; cutSamples(input)]);
+    if strcmp(opts.TrialsMethod, 'fast')
+        [trials, rows] = fastTrials(work, plan, [excluded; cutSamples(input)]);
+        workers = 1;
+        madeBy = 'the fast route';
+    else
+        [trials, rows, workers] = erpImageTrials(work, plan, [excluded; cutSamples(input)], opts);
+        madeBy = 'uf_erpimage';
+    end
     % An event Missing values 'drop' left out keeps its place in the event
     % list, its rows of the design zeroed, so uf_erpimage cuts it a window
     % too; it is not in the fit, and not one of the bins' events.
@@ -803,9 +940,9 @@ function [EEG, info] = packageTrials(input, plan, work, info, opts, excluded, sr
     if size(trials, 2) ~= numel(times) || ~all(ismember(kept, events)) ...
             || numel(unique(kept)) ~= numel(kept)
         throw(MException('Alakazam:Unfold:Trials', '%s', sprintf([ ...
-            'uf_erpimage returned %d trials of %d samples that do not line up with the %d ' ...
+            '%s returned %d trials of %d samples that do not line up with the %d ' ...
             'binned events and the %d samples of the fit. This is a fault in Alakazam, not in ' ...
-            'the model.'], size(trials, 3), size(trials, 2), numel(events), numel(times))));
+            'the model.'], madeBy, size(trials, 3), size(trials, 2), numel(events), numel(times))));
     end
 
     if isempty(kept)
@@ -820,6 +957,8 @@ function [EEG, info] = packageTrials(input, plan, work, info, opts, excluded, sr
     EEG = asEpochNode(input, plan, kept, trials, opts, srate, times);
 
     info.output = 'trials';
+    info.trialsMethod = opts.TrialsMethod;
+    info.trialWorkers = workers;
     info.trialCandidates = numel(events);
     info.trials = numel(kept);
     info.trialsDropped = numel(events) - numel(kept);
@@ -828,13 +967,14 @@ function [EEG, info] = packageTrials(input, plan, work, info, opts, excluded, sr
         note = sprintf(['%d binned event(s) fall on the same sample as another event of the ' ...
             'model, so they have no overlap-corrected trial: uf_erpimage keeps one epoch for ' ...
             'events at the same time, and which event''s fitted response it holds cannot be ' ...
-            'read from what it returns.'], sharedBinned);
+            'read from what it returns. The fast route leaves them out too, so both give the ' ...
+            'same trials.'], sharedBinned);
         info.notes{end + 1} = note;
         warning('Alakazam:Unfold:design', '%s', note);
     end
 end
 
-function [trials, rows] = erpImageTrials(work, plan, excluded)
+function [trials, rows, workers] = erpImageTrials(work, plan, excluded, opts)
 %ERPIMAGETRIALS  One overlap-corrected trial per binned event, by the
 %   toolbox's own uf_erpimage, called as its tutorial on ERP images calls it
 %   for "modelled plus residuals": 'type' 'modelled' with 'addResiduals' 1
@@ -849,9 +989,17 @@ function [trials, rows] = erpImageTrials(work, plan, excluded)
 %
 %   ONE CHANNEL AT A TIME, since uf_erpimage returns the mean of the
 %   channels it is given, each from a copy of the fitted dataset holding that
-%   channel alone, its data and its betas (oneChannel). Every step uf_erpimage
-%   takes is per channel, so this is what it returns for that channel of the
-%   whole dataset, without epoching every channel once for each channel.
+%   channel alone, its data and its betas (erpImageOfChannel). Every step
+%   uf_erpimage takes is per channel, so this is what it returns for that
+%   channel of the whole dataset, without epoching every channel once for
+%   each channel.
+%
+%   PROGRESS AND WORKERS. Each call epochs the whole recording around every
+%   modelled event three times, which on a long recording with many events
+%   takes a while, so the channels done are shown in the app's busy
+%   indicator, and on a large job (Unfold.workerPool, opts.Parallel) the
+%   calls go to parallel workers, the same call on the same copy. WORKERS
+%   is how many there were (1: none).
 %
 %   WHICH EVENT EACH TRIAL IS comes from uf_erpimage's own sort vector: each
 %   event carries its row of the model as .alzRow (forEpoching, which also
@@ -867,53 +1015,210 @@ function [trials, rows] = erpImageTrials(work, plan, excluded)
     copy.urevent = [];          % uf_erpimage numbers the events itself (.urevent)
     alignto = reshape(plan.cellTypes(plan.cellCounts > 0), 1, []);
     nchan = size(work.data, 1);
+    base = rmfield(copy, 'data');
+    base.unfold.beta_dc = [];
+    custom = [];
+    if isfield(work.unfold, 'beta_dcCustomrow') && ~isempty(work.unfold.beta_dcCustomrow)
+        custom = work.unfold.beta_dcCustomrow;
+        base.unfold.beta_dcCustomrow = [];
+    end
+    chanlocs = [];
+    if isfield(work, 'chanlocs') && numel(work.chanlocs) >= nchan
+        chanlocs = work.chanlocs;
+    end
+    part = @(ch) {work.data(ch, :), work.unfold.beta_dc(ch, :, :), rowOrEmpty(custom, ch), ...
+        rowOrEmpty(chanlocs, ch), alignto, excluded};
+
+    nEvents = numel(work.event);
+    bytes = bytesOf(base) + 8 * size(work.data, 2) * 4 + ...
+        3 * 8 * nEvents * size(work.unfold.beta_dc, 2) + 1.5e9;
+    [pool, workers] = Unfold.workerPool(nchan, size(work.data, 2) * nEvents, 1e9, opts.Parallel, bytes);
+
+    images = cell(1, nchan);
+    orders = cell(1, nchan);
+    TransTools.BusyGate('progress', 0);
+    if isempty(pool)
+        for ch = 1:nchan
+            TransTools.BusyGate('message', sprintf('Overlap-corrected trials: channel %d of %d...', ...
+                ch, nchan));
+            args = part(ch);
+            [images{ch}, orders{ch}] = erpImageOfChannel(base, args{:});
+            TransTools.BusyGate('progress', ch / nchan);
+        end
+    else
+        shared = parallel.pool.Constant(base);
+        futures = parallel.FevalFuture.empty;
+        for ch = 1:nchan
+            args = part(ch);
+            futures(ch) = parfeval(pool, @erpImageOfChannel, 2, shared, args{:});
+        end
+        stopTheRest = onCleanup(@() cancel(futures));
+        for k = 1:nchan
+            [ch, image, order] = fetchNextOrCause(futures);
+            images{ch} = image;
+            orders{ch} = order;
+            TransTools.BusyGate('message', sprintf(['Overlap-corrected trials on %d workers: ' ...
+                '%d of %d channels...'], workers, k, nchan));
+            TransTools.BusyGate('progress', k / nchan);
+        end
+    end
+    TransTools.BusyGate('progress', 1);
+
     trials = [];
     rows = [];
     for ch = 1:nchan
-        one = oneChannel(copy, ch); %#ok<NASGU>  read inside evalc
-        image = [];
-        order = [];
-        % Quiet: it reports every step it takes.
-        try
-            evalc(['[image, order] = uf_erpimage(one, ''channel'', 1, ''type'', ''modelled'', ' ...
-                '''addResiduals'', 1, ''alignto'', alignto, ''winrej'', excluded, ' ...
-                '''sort_by'', ''alzRow'', ''sort_time'', [0 0], ''figure'', 0);']);
-        catch err
-            if ~contains(err.message, 'Did not find any events to align to')
-                rethrow(err);
-            end
+        if isempty(images{ch})
             % Every window was left out: packageTrials says so, and why.
             trials = zeros(nchan, 0, 0);
             rows = zeros(1, 0);
             return;
         end
         if ch == 1
-            rows = reshape(order, 1, []);
-            trials = nan(nchan, size(image, 2), numel(rows));
-        elseif ~isequal(reshape(order, 1, []), rows)
+            rows = reshape(orders{1}, 1, []);
+            trials = nan(nchan, size(images{1}, 2), numel(rows));
+        elseif ~isequal(reshape(orders{ch}, 1, []), rows)
             throw(MException('Alakazam:Unfold:Trials', '%s', sprintf([ ...
                 'uf_erpimage returned other trials for channel %d than for channel 1. This ' ...
                 'is a fault in Alakazam, not in the model.'], ch)));
         end
-        trials(ch, :, :) = reshape(image, 1, size(image, 2), []);
+        trials(ch, :, :) = reshape(images{ch}, 1, size(images{ch}, 2), []);
     end
 end
 
-function one = oneChannel(EEG, ch)
-%ONECHANNEL  The fitted dataset with channel CH alone: its data, its
-%   betas, and the beta of any column the solver added (glmnet's
-%   'glmnet-DC-Correction').
-    one = EEG;
-    one.data = EEG.data(ch, :);
-    one.nbchan = 1;
-    if isfield(EEG, 'chanlocs') && numel(EEG.chanlocs) >= ch
-        one.chanlocs = EEG.chanlocs(ch);
+function [image, order] = erpImageOfChannel(base, row, beta, custom, chanloc, alignto, excluded) %#ok<INUSD> read in evalc
+%ERPIMAGEOFCHANNEL  uf_erpimage's modelled responses plus residuals for
+%   one channel: BASE, the fitted dataset without its data and betas (or a
+%   parallel.pool.Constant holding it), given the channel's data ROW, its
+%   betas, the betas of any column the solver added (glmnet's
+%   'glmnet-DC-Correction') and its location. IMAGE and ORDER are empty when
+%   every window was left out. Runs here or on a worker alike.
+    if isa(base, 'parallel.pool.Constant')
+        base = base.Value;
     end
-    one.unfold.beta_dc = EEG.unfold.beta_dc(ch, :, :);
-    if isfield(EEG.unfold, 'beta_dcCustomrow') && ~isempty(EEG.unfold.beta_dcCustomrow)
-        one.unfold.beta_dcCustomrow = EEG.unfold.beta_dcCustomrow(ch, :);
+    one = base;
+    one.data = row;
+    one.nbchan = 1;
+    if ~isempty(chanloc)
+        one.chanlocs = chanloc;
+    end
+    one.unfold.beta_dc = beta;
+    if ~isempty(custom)
+        one.unfold.beta_dcCustomrow = custom;
     end
     one.unfold.channel = 1;
+    image = [];
+    order = [];
+    try
+        % Quiet: it reports every step it takes.
+        evalc(['[image, order] = uf_erpimage(one, ''channel'', 1, ''type'', ''modelled'', ' ...
+            '''addResiduals'', 1, ''alignto'', alignto, ''winrej'', excluded, ' ...
+            '''sort_by'', ''alzRow'', ''sort_time'', [0 0], ''figure'', 0);']);
+    catch err
+        if ~contains(err.message, 'Did not find any events to align to')
+            rethrow(err);
+        end
+        image = [];
+        order = [];
+    end
+end
+
+function value = rowOrEmpty(values, k)
+%ROWOREMPTY  Row K of VALUES, or [] when there are none.
+    if isempty(values)
+        value = [];
+    elseif isstruct(values)
+        value = values(k);
+    else
+        value = values(k, :);
+    end
+end
+
+function [trials, rows] = fastTrials(work, plan, excluded)
+%FASTTRIALS  The overlap-corrected trials uf_erpimage gives (erpImageTrials),
+%   computed by Alakazam, for every channel at once and only at the trials'
+%   own samples: TrialsMethod 'fast'.
+%
+%   WHAT A TRIAL IS, as uf_erpimage computes it with 'type' 'modelled' and
+%   'addResiduals' 1: the event's own fitted response, its row of X times
+%   the betas uf_condense returns, plus the recording less the whole model's
+%   prediction (Xdc times the betas) over the event's window. The prediction
+%   is needed only in the trials' windows, a few hundred thousand samples
+%   rather than the whole recording three times per channel, which is where
+%   the time goes.
+%
+%   WHICH EVENTS, AND WHICH SAMPLES, as the toolbox's own route has them:
+%   the events of the binned types; each latency rounded, as uf_epoch rounds
+%   it; an event left out when its window touches a stretch the model left
+%   out (EXCLUDED), by uf_epoch's own test, over the window it passes to
+%   pop_epoch (the fit's lags and one sample more); and the samples EEGLAB's
+%   epoch cuts, from round(start x rate) to round(end x rate - 1) around the
+%   rounded latency, an event whose window runs off the recording left out.
+%   Events that share a sample are kept here and left out by packageTrials,
+%   as from uf_erpimage's trials. ROWS are rows of plan.events, ascending,
+%   as uf_erpimage's sort by .alzRow gives them.
+    nchan = size(work.data, 1);
+    srate = work.srate;
+    times = work.unfold.times;                      % the fit's lags, in seconds
+    limits = [times(1), times(end) + (times(2) - times(1))];   % uf_epoch's window
+    first = round(limits(1) * srate);               % EEGLAB's epoch
+    last = round(limits(2) * srate - 1);
+    lags = (first:last)';
+    if numel(lags) ~= numel(times)
+        throw(MException('Alakazam:Unfold:Trials', '%s', sprintf([ ...
+            'The trials'' windows hold %d samples but the fit has %d lags. This is a fault ' ...
+            'in Alakazam, not in the model.'], numel(lags), numel(times))));
+    end
+
+    alignto = reshape(plan.cellTypes(plan.cellCounts > 0), 1, []);
+    types = arrayfun(@(e) char(string(e.type)), work.event, 'UniformOutput', false);
+    aligned = find(ismember(types, alignto));
+    latency = round(double([work.event(aligned).latency]));
+    % uf_epoch's own test, event by event against every left-out stretch.
+    from = latency + limits(1) * srate;
+    to = latency + limits(2) * srate;
+    touches = false(size(latency));
+    for w = 1:size(excluded, 1)
+        win = excluded(w, :);
+        touches = touches | (win(1) < from & win(2) >= from) | (win(1) >= from & to >= win(1));
+    end
+    inside = latency + first >= 1 & latency + last <= size(work.data, 2);
+    keep = ~touches & inside;
+    rows = reshape(aligned(keep), 1, []);
+    latency = latency(keep);
+    if isempty(rows)
+        trials = zeros(nchan, 0, 0);
+        rows = zeros(1, 0);
+        return;
+    end
+
+    % The betas as uf_erpimage reads them: uf_condense's, channels x lags x
+    % columns, and Xdc's columns lag within column, one block per column.
+    condensed = [];
+    evalc('condensed = uf_condense(work);');
+    beta = condensed.beta;
+    nLags = size(beta, 2);
+    nCols = size(beta, 3);
+    expanded = reshape(permute(beta, [2 3 1]), nLags * nCols, nchan);      % for Xdc
+    own = reshape(permute(beta, [3 2 1]), nCols, nLags * nchan);           % for X
+    X = work.unfold.X;
+    XdcT = work.unfold.Xdc';    % columns of a sparse matrix are quick to take, rows are not
+
+    n = numel(rows);
+    trials = zeros(nchan, nLags, n);
+    chunk = 64;
+    TransTools.BusyGate('message', sprintf('Overlap-corrected trials (fast): %d trials...', n));
+    TransTools.BusyGate('progress', 0);
+    for s = 1:chunk:n
+        k = s:min(s + chunk - 1, n);
+        samples = latency(k) + lags;                                   % lags x trials
+        predicted = full(XdcT(:, samples(:))' * expanded);             % (lags x trials) x channels
+        recorded = double(work.data(:, samples(:)))';
+        residual = permute(reshape(recorded - predicted, nLags, numel(k), nchan), [3 1 2]);
+        fitted = permute(reshape(full(X(rows(k), :)) * own, numel(k), nLags, nchan), [3 2 1]);
+        trials(:, :, k) = fitted + residual;
+        TransTools.BusyGate('progress', k(end) / n);
+    end
+    TransTools.BusyGate('progress', 1);
 end
 
 function [EEG, info] = packageEpochs(input, plan, fitted, epoched, info, opts, srate, times)
