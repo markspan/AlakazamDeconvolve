@@ -134,10 +134,11 @@ function [EEG, options] = Deconvolve(input, varargin)
 %                          evaluateAt is evaluated: 'quantile' (the default,
 %                          the toolbox's: ten quantiles), 'linear' or
 %                          'average'
-%     trialsMethod         for output 'trials': 'toolbox' (the default: the
-%                          toolbox's uf_erpimage, channel by channel) or
-%                          'fast' (Alakazam's arithmetic, the same trials at
-%                          a fraction of the time; see Unfold.fitBins)
+%     trialsMethod         for output 'trials': 'fast' (the default, also for
+%                          options stored without it: Alakazam's arithmetic,
+%                          the same trials at a fraction of the time; see
+%                          Unfold.fitBins) or 'toolbox' (the toolbox's
+%                          uf_erpimage, channel by channel)
 %     parallel             'auto' (the default), 'off' or 'on': whether the
 %                          fit and the toolbox's trials run on parallel
 %                          workers (see Unfold.fitBins); not set by the
@@ -212,7 +213,7 @@ tagged = applyBins(input, options);
     'FoldEvent', TransTools.FieldOr(options, 'foldEvent', {}), ...
     'SolverIterations', TransTools.FieldOr(options, 'solverIterations', 400), ...
     'Output', char(string(TransTools.FieldOr(options, 'output', 'average'))), ...
-    'TrialsMethod', char(string(TransTools.FieldOr(options, 'trialsMethod', 'toolbox'))), ...
+    'TrialsMethod', char(string(TransTools.FieldOr(options, 'trialsMethod', 'fast'))), ...
     'Parallel', char(string(TransTools.FieldOr(options, 'parallel', 'auto'))));
 
 report(info);

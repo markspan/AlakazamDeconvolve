@@ -2,10 +2,12 @@ classdef OverlapCorrectedTrialsTest < matlab.unittest.TestCase
 %OVERLAPCORRECTEDTRIALSTEST  Deconvolve's second output: one trial per
 %   binned event with every other event's fitted response taken out.
 %
-%   The trials are the Unfold toolbox's own: uf_erpimage, its modelled
-%   responses plus residuals (Unfold.fitBins). So the first check is that
-%   they ARE the toolbox's, against the same model run as an Unfold script
-%   runs it. The rest checks what that has to mean for Alakazam: that the
+%   The trials are the Unfold toolbox's own: what uf_erpimage makes, its
+%   modelled responses plus residuals, computed by Alakazam by default or
+%   by uf_erpimage itself on request (Unfold.fitBins, TrialsMethod). So the
+%   first check is that both ARE the toolbox's, against the same model run
+%   as an Unfold script runs it. The rest checks, on the default, what that
+%   has to mean for Alakazam: that the
 %   trials average back to the fitted waveforms, which is the property that
 %   says the trials and the model agree; that each single trial has lost the
 %   overlap, not just their mean; and that the result is shaped like the
@@ -74,12 +76,16 @@ classdef OverlapCorrectedTrialsTest < matlab.unittest.TestCase
         %   writes it (uf_designmat, uf_timeexpandDesignmat, uf_glmfit, on the
         %   dataset with its boundary event), and uf_erpimage asked for the
         %   modelled responses plus residuals of the stimuli, channel by
-        %   channel: Deconvolve's trials are those.
+        %   channel: Deconvolve's trials are those, made either way.
             testCase.assumeTrue(Unfold.isAvailable(), 'The Unfold toolbox is not installed.');
             EEG = DeconvolveTest.untaggedRecording();
-            trials = Deconvolve(EEG, DeconvolveTest.options('output', 'trials', 'baselineMs', [], ...
-                'excludeAroundCuts', false));
-            testCase.assertEmpty(trials.etc.alz.unfold.excludedIntervals, ...
+            made = struct();
+            for method = {'fast', 'toolbox'}
+                made.(method{1}) = Deconvolve(EEG, DeconvolveTest.options('output', 'trials', ...
+                    'baselineMs', [], 'excludeAroundCuts', false, 'trialsMethod', method{1}));
+                testCase.assertEqual(made.(method{1}).etc.alz.unfold.trialsMethod, method{1});
+            end
+            testCase.assertEmpty(made.fast.etc.alz.unfold.excludedIntervals, ...
                 'Nothing is left out of the model, as in a script that leaves nothing out.');
 
             script = eeg_emptyset();
@@ -97,13 +103,16 @@ classdef OverlapCorrectedTrialsTest < matlab.unittest.TestCase
             evalc('script = uf_timeexpandDesignmat(script, ''timelimits'', [-0.2 0.8]);');
             evalc('script = uf_glmfit(script);');
             for bin = 1:2
-                mine = trials.data(:, :, TransTools.BinTrials(trials, bin));
                 for ch = 1:size(EEG.data, 1)
                     image = [];
                     evalc(['image = uf_erpimage(script, ''channel'', ch, ''type'', ''modelled'', ' ...
                         '''addResiduals'', 1, ''alignto'', {sprintf(''S%d'', bin)}, ''figure'', 0);']);
-                    testCase.verifyEqual(squeeze(mine(ch, :, :)), reshape(image, size(image, 2), []), ...
-                        'AbsTol', 1e-6, sprintf('Bin %d, channel %d.', bin, ch));
+                    for method = {'fast', 'toolbox'}
+                        trials = made.(method{1});
+                        mine = trials.data(:, :, TransTools.BinTrials(trials, bin));
+                        testCase.verifyEqual(squeeze(mine(ch, :, :)), reshape(image, size(image, 2), []), ...
+                            'AbsTol', 1e-6, sprintf('%s: bin %d, channel %d.', method{1}, bin, ch));
+                    end
                 end
             end
         end

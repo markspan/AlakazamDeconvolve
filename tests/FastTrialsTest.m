@@ -2,7 +2,7 @@ classdef FastTrialsTest < matlab.unittest.TestCase
 %FASTTRIALSTEST  The faster ways to Deconvolve's overlap-corrected trials
 %   give the trials the toolbox's way gives, and say how far they are.
 %
-%   Alakazam's own arithmetic (trialsMethod 'fast') is held to the toolbox's
+%   Alakazam's own arithmetic (trialsMethod 'fast', the default) is held to the toolbox's
 %   uf_erpimage on a recording where every rule that decides a trial is at
 %   work: a cut, artefact stretches left out of the model, a stimulus on
 %   the sample of a response, and formulas with a covariate and a spline.
@@ -44,16 +44,17 @@ classdef FastTrialsTest < matlab.unittest.TestCase
             options = DeconvolveTest.options('output', 'trials', 'artifactThresholdUv', 150, ...
                 'artifactChannels', 'all', 'parallel', 'off');
 
+            fast = Deconvolve(EEG, options);   % no trialsMethod: the default
+            options.trialsMethod = 'toolbox';
             toolbox = Deconvolve(EEG, options);
-            options.trialsMethod = 'fast';
-            fast = Deconvolve(EEG, options);
 
             info = toolbox.etc.alz.unfold;
             testCase.assertNotEmpty(info.excludedIntervals, 'The eye channel''s swings are left out.');
             testCase.assertGreaterThan(info.trialsDropped, 0, 'Some trials touch what was left out.');
             testCase.assertEqual(info.trialsSharingASample, 1, 'One stimulus shares a sample.');
             FastTrialsTest.verifySameTrials(testCase, fast, toolbox);
-            testCase.verifyEqual(fast.etc.alz.unfold.trialsMethod, 'fast');
+            testCase.verifyEqual(fast.etc.alz.unfold.trialsMethod, 'fast', ...
+                'Options without a trialsMethod (templates, older nodes) take Alakazam''s way.');
             testCase.verifyEqual(info.trialsMethod, 'toolbox');
         end
 
@@ -70,7 +71,7 @@ classdef FastTrialsTest < matlab.unittest.TestCase
             formulas = struct('bin', {'Frequent', 'Rare'}, ...
                 'formula', {'y ~ 1 + rt', 'y ~ 1 + spl(rt, 4)'});
             options = DeconvolveTest.options('output', 'trials', 'formulas', formulas, ...
-                'parallel', 'off');
+                'parallel', 'off', 'trialsMethod', 'toolbox');
 
             toolbox = Deconvolve(EEG, options);
             options.trialsMethod = 'fast';
@@ -98,7 +99,8 @@ classdef FastTrialsTest < matlab.unittest.TestCase
             rehash;
             testCase.addTeardown(@() rmappdata(groot, 'FastTrialsTestGate'));
             EEG = DeconvolveTest.untaggedRecording();
-            options = DeconvolveTest.options('output', 'trials', 'parallel', 'off');
+            options = DeconvolveTest.options('output', 'trials', 'parallel', 'off', ...
+                'trialsMethod', 'toolbox');
 
             setappdata(groot, 'FastTrialsTestGate', cell(0, 2));
             Deconvolve(EEG, options);
@@ -120,12 +122,21 @@ classdef FastTrialsTest < matlab.unittest.TestCase
             testCase.verifyEqual(progress(end), 1);
         end
 
+        function fitBinsMakesThemAlakazamsWayUnlessAsked(testCase)
+        %FITBINSMAKESTHEMALAKAZAMSWAYUNLESSASKED  Unfold.fitBins called
+        %   without a TrialsMethod, as a script would, takes the default too.
+            testCase.assumeTrue(Unfold.isAvailable(), 'The Unfold toolbox is not installed.');
+            [~, info] = Unfold.fitBins(UnfoldBinsTest.recording(), 'WindowMs', UnfoldBinsTest.WindowMs, ...
+                'ArtifactThresholdUv', 0, 'Output', 'trials', 'Parallel', 'off');
+            testCase.verifyEqual(info.trialsMethod, 'fast');
+        end
+
         function aSmallJobStaysOnThisMatlab(testCase)
         %ASMALLJOBSTAYSONTHISMATLAB  Starting workers costs more than a short
         %   fit takes, so 'auto' leaves a small one here.
             testCase.assumeTrue(Unfold.isAvailable(), 'The Unfold toolbox is not installed.');
             trials = Deconvolve(DeconvolveTest.untaggedRecording(), ...
-                DeconvolveTest.options('output', 'trials'));
+                DeconvolveTest.options('output', 'trials', 'trialsMethod', 'toolbox'));
             testCase.verifyEqual(trials.etc.alz.unfold.fitWorkers, 1);
             testCase.verifyEqual(trials.etc.alz.unfold.trialWorkers, 1);
         end
@@ -146,7 +157,7 @@ classdef FastTrialsTest < matlab.unittest.TestCase
             end
             EEG = FastTrialsTest.everyRuleAtWork();
             options = DeconvolveTest.options('output', 'trials', 'artifactThresholdUv', 150, ...
-                'artifactChannels', 'all');
+                'artifactChannels', 'all', 'trialsMethod', 'toolbox');
 
             options.parallel = 'off';
             here = Deconvolve(EEG, options);

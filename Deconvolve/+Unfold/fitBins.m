@@ -250,8 +250,9 @@ function [EEG, info] = fitBins(input, varargin)
 %                        Average and the data-quality report take it like any
 %                        epoch node. Each trial is the recording around its
 %                        event with every other event's fitted response
-%                        subtracted: the toolbox's own uf_erpimage, its
-%                        modelled responses plus residuals (erpImageTrials).
+%                        subtracted: what the toolbox's own uf_erpimage
+%                        makes, its modelled responses plus residuals (see
+%                        TrialsMethod for how).
 %                        At the least-squares fit a bin's residuals average
 %                        to zero at every lag, so averaging its trials gives
 %                        back its fitted waveform. A trial whose window
@@ -263,20 +264,21 @@ function [EEG, info] = fitBins(input, varargin)
 %                        cut them, nothing subtracted. 'terms': one waveform
 %                        per model term instead (see below).
 %     TrialsMethod       how the overlap-corrected trials are made:
-%                        'toolbox' (the default): by uf_erpimage, channel by
-%                        channel, as above. Each call epochs the whole
-%                        recording around every modelled event, three times,
-%                        so on a long recording with many events this takes
-%                        long. 'fast': by Alakazam (fastTrials), the same
-%                        trials from the same model, computed only at the
-%                        trials' own samples and for every channel at once:
-%                        the recording less the model's prediction there,
-%                        plus the event's own fitted response, kept and cut
-%                        as uf_epoch and pop_epoch keep and cut them. It
-%                        agrees with the toolbox's to rounding error
-%                        (OverlapCorrectedTrialsTest), but it is Alakazam's
-%                        arithmetic rather than the toolbox's call, so a
-%                        change to uf_erpimage would not reach it.
+%                        'fast' (the default, the user's choice): by Alakazam
+%                        (fastTrials), the trials uf_erpimage makes from the
+%                        same model, computed only at the trials' own
+%                        samples and for every channel at once: the
+%                        recording less the model's prediction there, plus
+%                        the event's own fitted response, kept and cut as
+%                        uf_epoch and pop_epoch keep and cut them. It agrees
+%                        with the toolbox's to rounding error
+%                        (FastTrialsTest), but it is Alakazam's arithmetic
+%                        rather than the toolbox's call, so a change to
+%                        uf_erpimage would not reach it. 'toolbox': by
+%                        uf_erpimage, channel by channel, as above. Each call
+%                        epochs the whole recording around every modelled
+%                        event, three times, so on a long recording with
+%                        many events this takes long.
 %     Parallel           'auto' (the default), 'off' or 'on': whether the
 %                        steps done one channel at a time run on parallel
 %                        workers (Unfold.workerPool): the fit with the
@@ -389,7 +391,7 @@ function [EEG, info] = fitBins(input, varargin)
     parsed.addParameter('TimeBasisCount', 30, @(v) isnumeric(v) && isscalar(v) && v >= 1 && v == round(v));
     parsed.addParameter('Output', 'average', ...
         @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'average', 'trials', 'terms'})));
-    parsed.addParameter('TrialsMethod', 'toolbox', ...
+    parsed.addParameter('TrialsMethod', 'fast', ...
         @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'toolbox', 'fast'})));
     parsed.addParameter('Parallel', 'auto', ...
         @(v) (ischar(v) || isstring(v)) && any(strcmpi(char(string(v)), {'auto', 'off', 'on'})));

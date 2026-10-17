@@ -223,22 +223,43 @@ classdef DeconvolveDialogTest < matlab.unittest.TestCase
         function howTheTrialsAreMadeIsAChoiceForTheTrials(testCase)
         %HOWTHETRIALSAREMADEISACHOICEFORTHETRIALS  Closed while the result is
         %   a waveform per bin, open once overlap-corrected trials are asked
-        %   for, and the faster way is returned when chosen.
+        %   for, and the toolbox's own way is returned when chosen.
             enabled = {};
-            options = testCase.runDialog(@(f) chooseFast(f));
+            options = testCase.runDialog(@(f) chooseToolbox(f));
 
             testCase.verifyEqual(enabled, {'off', 'on'});
             testCase.assertNotEmpty(options);
             testCase.verifyEqual(options.output, 'trials');
-            testCase.verifyEqual(options.trialsMethod, 'fast');
+            testCase.verifyEqual(options.trialsMethod, 'toolbox');
 
-            function chooseFast(f)
+            function chooseToolbox(f)
                 dropdown = findall(f, 'Type', 'uidropdown', 'Tag', 'trialsMethod');
                 enabled{end + 1} = char(dropdown.Enable);
                 choose(f, 'output', 'trials');
                 enabled{end + 1} = char(dropdown.Enable);
-                choose(f, 'trialsMethod', 'fast');
+                choose(f, 'trialsMethod', 'toolbox');
             end
+        end
+
+        function storedSettingsWithoutAWayGetAlakazams(testCase)
+        %STOREDSETTINGSWITHOUTAWAYGETALAKAZAMS  Settings stored before the
+        %   choice existed, or naming a way the dialog does not offer, open
+        %   on Alakazam's arithmetic, the default (the user's choice); a
+        %   stored choice of the toolbox's call stays.
+            stored = struct('output', 'trials');
+            options = testCase.runDialog(@(f) [], stored);
+            testCase.assertNotEmpty(options);
+            testCase.verifyEqual(options.trialsMethod, 'fast', 'Stored before the choice existed.');
+
+            stored.trialsMethod = 'by hand';
+            options = testCase.runDialog(@(f) [], stored);
+            testCase.assertNotEmpty(options);
+            testCase.verifyEqual(options.trialsMethod, 'fast', 'A way the dialog does not offer.');
+
+            stored.trialsMethod = 'toolbox';
+            options = testCase.runDialog(@(f) [], stored);
+            testCase.assertNotEmpty(options);
+            testCase.verifyEqual(options.trialsMethod, 'toolbox', 'The stored choice was not kept.');
         end
 
         % ---- the toolbox's defaults, each a choice ----------------------- %
@@ -264,7 +285,8 @@ classdef DeconvolveDialogTest < matlab.unittest.TestCase
             testCase.verifyEqual(options.timeBasis, 'stick', 'One beta per sample, as the toolbox expands.');
             testCase.verifyEqual(options.timeBasisCount, 30);
             testCase.verifyEqual(options.collinearity, 'none', 'The toolbox checks none unless asked.');
-            testCase.verifyEqual(options.trialsMethod, 'toolbox', 'Trials by uf_erpimage unless asked.');
+            testCase.verifyEqual(options.trialsMethod, 'fast', ...
+                'Trials by Alakazam''s arithmetic unless the toolbox''s call is asked for.');
         end
 
         function theScanTheMarginalAndTheBaselineAreChoices(testCase)

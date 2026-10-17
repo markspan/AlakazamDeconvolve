@@ -57,7 +57,7 @@ explained by two events is shared between them [@smith2015; @ehinger2019;
 | **Collinearity (VIF)** | not checked | The variance inflation factor of every column of the time-expanded design, by Unfold's `uf_vif`: how hard the overlap makes it to tell the bins apart (with overlap correction only; long windows need much memory). Each term's largest is in the notes; the toolbox notes that splines give high values that are usually no problem. |
 | **Model fit** | not measured | How much of the recording the model explains, per channel, by Unfold's `uf_checkmodelfit` (with overlap correction only): R², the partial R² of each term (the model refitted without it), or either cross-validated (each fold fitted on the rest). The summary is in the notes and the data-quality report. |
 | **Folds cut at** | none | For a cross-validated fit: the event code the recording is cut into folds at, such as the breaks between blocks. The toolbox refuses a code that falls where an event's response is modelled. |
-| **Trials made by** | the toolbox's `uf_erpimage` | For overlap-corrected trials: the toolbox's `uf_erpimage`, channel by channel, or Alakazam's own arithmetic, the same trials far sooner on a long recording (below). |
+| **Trials made by** | Alakazam | For overlap-corrected trials: Alakazam's own arithmetic, or the toolbox's `uf_erpimage`, channel by channel, the same trials far later on a long recording (below). |
 
 : Deconvolve's options. {#tbl-deconvolve}
 
@@ -142,8 +142,10 @@ model the saccades and blinks instead.
   trial-to-trial standard error of its own.
 - **Overlap-corrected trials** are one epoch per binned event, shaped like
   DefineBins' epochs, each the recording around its event with every other
-  event's fitted response subtracted: Unfold's own `uf_erpimage`, its
-  modelled responses plus residuals, one channel at a time. Averaging them
+  event's fitted response subtracted: the trials Unfold's own `uf_erpimage`
+  makes, its modelled responses plus residuals, computed by Alakazam at the
+  trials' own samples unless **Trials made by** asks for the toolbox's call
+  (see Long recordings, below). Averaging them
   returns the fitted waveforms; what they add is the trials themselves, for
   an ERP image without the overlap ([The plot area](https://markspan.github.io/Alakazam/#sec-plot-area)) and for the data-quality
   report's measures of trial-to-trial noise. A trial whose window touches a
@@ -176,17 +178,19 @@ single call, which reports no progress).
   same to rounding error (a worker computes on one thread and sums some
   terms in another order), and a channel that ran out of iterations still
   says so.
-- **The overlap-corrected trials**: `uf_erpimage` epochs the whole recording
-  around every modelled event, three times for each channel, which on a long
-  recording with many events adds up to a long wait. On a large job the
-  channels go to parallel workers. **Trials made by: Alakazam** computes the
-  same trials much faster instead, only at the trials' own
-  samples and for every channel at once: the recording less the model's
-  prediction there, plus the event's own fitted response, with the events
-  kept and the windows cut as `uf_epoch` and EEGLAB's `pop_epoch` keep and cut
-  them. It agrees with the toolbox's trials to rounding error, with cuts,
-  stretches left out, covariates and splines, but it is Alakazam's arithmetic
-  rather than the toolbox's call, which is why it is not the default.
+- **The overlap-corrected trials**: by default (**Trials made by:
+  Alakazam**) they are computed only at the trials' own samples and for
+  every channel at once: the recording less the model's prediction there,
+  plus the event's own fitted response, with the events kept and the
+  windows cut as `uf_epoch` and EEGLAB's `pop_epoch` keep and cut them. It
+  agrees with the toolbox's trials to rounding error, with cuts, stretches
+  left out, covariates and splines, but it is Alakazam's arithmetic rather
+  than the toolbox's call. **Trials made by: the toolbox** calls
+  `uf_erpimage` for each channel instead, which epochs the whole recording
+  around every modelled event, three times, and on a long recording with
+  many events adds up to a long wait; on a large job the channels go to
+  parallel workers. Settings and templates stored before the choice
+  existed make their trials Alakazam's way.
 
 Parallel workers are used only when the job is large enough to repay
 starting them (which takes a while the first time), when the Parallel
@@ -450,8 +454,9 @@ corrected trials nothing follows the line:
 
 The **Saccade** bin sorted by **Next buttonpress** gives the remaining panel
 (Figure 11D). Each corrected trial is the recording around its event with
-every other event's fitted response subtracted, by the Unfold toolbox's own
-`uf_erpimage`. 3323 of the 3829 events keep a trial: a window that touches a
+every other event's fitted response subtracted, as the Unfold toolbox's own
+`uf_erpimage` makes them (computed by Alakazam, the default; the toolbox's
+call gives the same trials, more slowly). 3323 of the 3829 events keep a trial: a window that touches a
 stretch left out of the model had nothing subtracted there, and is dropped;
 and a few button presses and faces fall on the very sample of a saccade,
 where the toolbox keeps one trial for the two, so they have none. The

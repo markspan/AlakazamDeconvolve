@@ -384,9 +384,11 @@ be a direction no event had. Each term of each binned event type becomes one
 waveform, labelled "<bin>: <term>"; the nuisance types are dropped.
 
 **Overlap-corrected trials**: one epoch per binned event, the recording around
-it minus every other event's fitted response, by the toolbox's own
-`uf_erpimage`, called as its tutorial on ERP images calls it for the modelled
-responses plus residuals:
+it minus every other event's fitted response, as the toolbox's own
+`uf_erpimage` makes them. By default Alakazam computes them itself, faster (the
+last item below); with **Trials made by: the toolbox** Deconvolve calls
+`uf_erpimage` as its tutorial on ERP images calls it for the modelled responses
+plus residuals:
 
 ```matlab
 image = uf_erpimage(EEG, 'channel', ch, 'type', 'modelled', 'addResiduals', 1, ...
@@ -427,7 +429,8 @@ and many stretches left out, that is a long wait per channel. Two things help:
   one-channel copy (`Unfold.workerPool`), when the Parallel Computing Toolbox
   is installed and Alakazam's settings allow it, and when Deconvolve is not
   itself running on a worker (Apply to All Raw Files).
-- **Trials made by: Alakazam** (`TrialsMethod` 'fast', a departure from the
+- **Trials made by: Alakazam** (`TrialsMethod` 'fast', the default, also for
+  settings and templates stored without the choice: a departure from the
   toolbox, chosen by the user). The same arithmetic `uf_erpimage` does, the
   event's row of `X` times β plus the recording less X<sub>dc</sub>β, but
   evaluated only at the samples of the binned events' windows and for every
@@ -441,7 +444,7 @@ and many stretches left out, that is a long wait per channel. Two things help:
   a cut, stretches left out, an event sharing its sample, and a covariate and a
   spline in the formulas, to 10<sup>-9</sup> of the trials' largest value.
 
-The fit itself (2.6) is spread over workers the same way when the solver is the
+The fit itself (2.5) is spread over workers the same way when the solver is the
 default lsmr and the job is large: each worker runs the toolbox's `uf_glmfit` on
 its channels and returns its betas and its warnings. lsmr solves one channel at
 a time on a design every channel shares, so the betas are the same to rounding
@@ -571,6 +574,16 @@ fitted as they always were, by deconvolution with lsmr. The shipped Ehinger & Di
 template (manual, chapter 17) now states its choices, the scalp EEG only,
 `'AME'` and the median (nothing is missing in its data), so its numbers in
 the chapter are unchanged.
+
+**A setting that starts at Alakazam's choice**, the toolbox's way offered
+beside it (the user's decision, 2026-10-17):
+
+| Setting | Deconvolve's first choice | The toolbox's way, offered |
+|---|---|---|
+| **Trials made by** | Alakazam's arithmetic, the same trials at the trials' own samples (2.7, overlap-corrected trials) | `uf_erpimage`, channel by channel |
+
+Options stored without it, templates and nodes made before it existed among
+them, take Alakazam's arithmetic too; the trials are the same to rounding error.
 
 **Where Deconvolve does something the toolbox does not do at all**:
 
