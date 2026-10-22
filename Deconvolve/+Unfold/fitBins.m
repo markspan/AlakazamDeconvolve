@@ -1255,8 +1255,8 @@ function EEG = asEpochNode(input, plan, kept, trials, opts, srate, times)
 %   trial's own event from the neighbours EpochView sorts by. Rounded to a
 %   sample, an event between samples (a Heartbeats R-peak) fell just after
 %   or just before time zero and was its own next or previous event, less
-%   than a sample away in every trial. That input is new in the Alakazam
-%   after V0.4.7.1, which this needs.
+%   than a sample away in every trial. That input is new in Alakazam
+%   V0.4.7.2, which this needs.
     if ~isempty(opts.BaselineMs)
         inWindow = baselineSamples(times, opts.BaselineMs);
         trials = trials - mean(trials(:, inWindow, :), 2);
