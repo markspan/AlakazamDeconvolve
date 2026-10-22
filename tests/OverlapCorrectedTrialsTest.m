@@ -210,6 +210,54 @@ classdef OverlapCorrectedTrialsTest < matlab.unittest.TestCase
             testCase.verifyEqual(key.values, expected, 'AbsTol', 1e-9);
         end
 
+        function aTrialsOwnEventBetweenSamplesIsNotItsNeighbour(testCase)
+        %ATRIALSOWNEVENTBETWEENSAMPLESISNOTITSNEIGHBOUR  Time zero is the
+        %   sample Unfold rounds each event to; an event between samples (a
+        %   Heartbeats R-peak) then fell just after or just before it and was
+        %   its own next or previous event, less than a sample away. The
+        %   stimuli are mostly about 2 s apart, but the jitter brings a few
+        %   within one window of each other: those are real neighbours.
+            testCase.assumeTrue(Unfold.isAvailable(), 'The Unfold toolbox is not installed.');
+            EEG = OverlapCorrectedTrialsTest.jitteredRecording();
+            stimuli = find(strcmp({EEG.event.type}, 'S1'));
+            rng(5);
+            for k = stimuli
+                EEG.event(k).latency = EEG.event(k).latency + 0.05 + 0.9 * rand();
+            end
+
+            trials = Deconvolve(EEG, DeconvolveTest.options('output', 'trials', ...
+                'binScript', 'bin 1 "Stimulus" "S1"'));
+
+            % Each trial's other stimuli, from time zero (its own latency,
+            % rounded), inside the window and never the trial's own.
+            latency = [EEG.event(stimuli).latency];
+            window = trials.times([1 end]);
+            expectedNext = nan(1, numel(latency));
+            expectedPrevious = nan(1, numel(latency));
+            for t = 1:numel(latency)
+                zero = round(latency(t));
+                later = latency(latency > latency(t));
+                earlier = latency(latency < latency(t));
+                if ~isempty(later)
+                    expectedNext(t) = (min(later) - zero) / EEG.srate * 1000;
+                end
+                if ~isempty(earlier)
+                    expectedPrevious(t) = (max(earlier) - zero) / EEG.srate * 1000;
+                end
+            end
+            expectedNext(expectedNext > window(2)) = NaN;
+            expectedPrevious(expectedPrevious < window(1)) = NaN;
+
+            context = trials.etc.alz.epochNeighbours;
+            own = strcmp(context.types, 'S1');
+            testCase.verifyEqual(context.next(own, :), expectedNext, 'AbsTol', 1e-9, ...
+                'A trial''s own stimulus is not its next one.');
+            testCase.verifyEqual(context.previous(own, :), expectedPrevious, 'AbsTol', 1e-9, ...
+                'A trial''s own stimulus is not its previous one.');
+            testCase.assertGreaterThan(nnz(isfinite(expectedNext)), 0, ...
+                'Some trial has a real next stimulus, or this test shows half as much.');
+        end
+
         function theTrialsAreShapedLikeAnEpochNode(testCase)
             testCase.assumeTrue(Unfold.isAvailable(), 'The Unfold toolbox is not installed.');
             EEG = DeconvolveTest.untaggedRecording();

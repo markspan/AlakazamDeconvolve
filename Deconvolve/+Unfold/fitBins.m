@@ -1250,6 +1250,13 @@ function EEG = asEpochNode(input, plan, kept, trials, opts, srate, times)
 %   sample Unfold placed each event on. cutEpochs is handed one channel
 %   only: it would otherwise cut every channel of the raw recording just for
 %   that to be replaced by the trials a line later.
+%
+%   It is also handed each event's exact latency, by which it tells a
+%   trial's own event from the neighbours EpochView sorts by. Rounded to a
+%   sample, an event between samples (a Heartbeats R-peak) fell just after
+%   or just before time zero and was its own next or previous event, less
+%   than a sample away in every trial. That input is new in the Alakazam
+%   after V0.4.7.1, which this needs.
     if ~isempty(opts.BaselineMs)
         inWindow = baselineSamples(times, opts.BaselineMs);
         trials = trials - mean(trials(:, inWindow, :), 2);
@@ -1258,9 +1265,11 @@ function EEG = asEpochNode(input, plan, kept, trials, opts, srate, times)
     layout.data = input.data(1, :);
     centre = zeros(1, numel(input.event));
     centre(kept) = round([input.event(kept).latency]);
+    exact = zeros(1, numel(input.event));
+    exact(kept) = [input.event(kept).latency];
     lags = round(times / 1000 * srate);
     [EEG, bindesc] = DefineBinsEngine.cutEpochs(layout, keptBins(input.bindesc, plan, kept), ...
-        struct('lo', lags(1), 'hi', lags(end) + 1, 'unit', 'samples'), centre);
+        struct('lo', lags(1), 'hi', lags(end) + 1, 'unit', 'samples'), centre, exact);
     EEG.bindesc = bindesc;
     EEG.data = trials;
     EEG.times = times;      % uf_condense's own, which the waveforms carry too
